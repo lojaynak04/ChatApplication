@@ -1,0 +1,468 @@
+#include <iostream>
+
+#include <fstream>
+
+#include <sstream>
+
+#include <cstring>
+
+#include <limits> // Add this include for numeric_limits
+
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+
+#include <unistd.h>
+
+
+
+constexpr int PORT = 4500;
+
+constexpr int BUFFER_SIZE = 1024;
+
+constexpr const char* LOG_FILE = "chat_log.txt";
+
+constexpr const char* USER_FILE = "users.txt";
+
+
+
+// Define a structure to hold user credentials
+
+struct User {
+
+    std::string username;
+
+    std::string password;
+
+};
+
+
+
+// Function to authenticate user credentials
+
+bool authenticateUser(const std::string& username, const std::string& password, const User users[], int numUsers) {
+
+    for (int i = 0; i < numUsers; ++i) {
+
+        if (users[i].username == username && users[i].password == password) {
+
+            return true;
+
+        }
+
+    }
+
+    return false;
+
+}
+
+
+
+// Function to create a new user and save to file
+
+bool createUser(const std::string& username, const std::string& password) {
+
+    std::ofstream outfile(USER_FILE, std::ios_base::app);
+
+    if (!outfile.is_open()) {
+
+        std::cerr << "Failed to open " << USER_FILE << " for writing" << std::endl;
+
+        return false;
+
+    }
+
+    outfile << username << ':' << password << std::endl;
+
+    outfile.close();
+
+    return true;
+
+}
+
+
+
+// Function to load users from file
+
+int loadUsers(User users[]) {
+
+    std::ifstream infile(USER_FILE);
+
+    if (!infile.is_open()) {
+
+        std::cerr << "Failed to open " << USER_FILE << " for reading" << std::endl;
+
+        return 0;
+
+    }
+
+    std::string line;
+
+    int count = 0;
+
+    while (std::getline(infile, line)) {
+
+        std::istringstream iss(line);
+
+        if (!(iss >> users[count].username >> users[count].password)) {
+
+            std::cerr << "Error reading user info from file" << std::endl;
+
+            break;
+
+        }
+
+        ++count;
+
+    }
+
+    infile.close();
+
+    return count;
+
+}
+
+
+
+// Function to log messages to a file
+
+void logMessage(const std::string& message, bool sent) {
+
+    std::ofstream logfile(LOG_FILE, std::ios_base::app);
+
+    if (!logfile.is_open()) {
+
+        std::cerr << "Failed to open " << LOG_FILE << " for writing" << std::endl;
+
+        return;
+
+    }
+
+    logfile << (sent ? "Sent: " : "Received: ") << message << std::endl;
+
+    logfile.close();
+
+}
+
+
+
+// Function to display messages from saved file
+
+void displayMessages() {
+
+    std::ifstream logfile(LOG_FILE);
+
+    if (!logfile.is_open()) {
+
+        std::cerr << "Failed to open " << LOG_FILE << " for reading" << std::endl;
+
+        return;
+
+    }
+
+    std::cout << "Messages:" << std::endl;
+
+    std::string line;
+
+    while (std::getline(logfile, line)) {
+
+        std::cout << line << std::endl;
+
+    }
+
+    logfile.close();
+
+}
+
+
+
+// Function to display users and passwords
+
+void displayUsers(const User users[], int numUsers) {
+
+    std::cout << "Users:" << std::endl;
+
+    for (int i = 0; i < numUsers; ++i) {
+
+        std::cout << users[i].username << ":" << users[i].password << std::endl;
+
+    }
+
+}
+
+
+
+// Function to handle chat between client and server
+
+void chat(int clientSocket) {
+
+    char buffer[BUFFER_SIZE];
+
+    while (true) {
+
+        memset(buffer, 0, sizeof(buffer));
+
+        if (recv(clientSocket, buffer, BUFFER_SIZE, 0) <= 0) {
+
+            std::cout << "Connection closed by client." << std::endl;
+
+            break;
+
+        }
+
+        std::cout << "Client: " << buffer << std::endl;
+
+
+
+        // Log received message
+
+        logMessage(buffer, false);
+
+
+
+        // Get server input
+
+        std::cout << "Server: ";
+
+        std::cin.getline(buffer, BUFFER_SIZE);
+
+        send(clientSocket, buffer, strlen(buffer), 0);
+
+
+
+        // Log sent message
+
+        logMessage(buffer, true);
+
+    }
+
+}
+
+
+
+int main() {
+
+    int serverSocket, clientSocket;
+
+    sockaddr_in serverAddr, clientAddr;
+
+    socklen_t clientAddrLen = sizeof(clientAddr);
+
+
+
+    // Create socket
+
+    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+
+        std::cerr << "Socket creation error" << std::endl;
+
+        return 1;
+
+    }
+
+
+
+    memset(&serverAddr, 0, sizeof(serverAddr));
+
+    serverAddr.sin_family = AF_INET;
+
+    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    serverAddr.sin_port = htons(PORT);
+
+
+
+    // Bind socket to port
+
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+
+        std::cerr << "Bind failed" << std::endl;
+
+        return 1;
+
+    }
+
+
+
+    // Listen for connections
+
+    if (listen(serverSocket, SOMAXCONN) < 0) {
+
+        std::cerr << "Listen failed" << std::endl;
+
+        return 1;
+
+    }
+
+
+
+    std::cout << "Server listening on port " << PORT << std::endl;
+
+
+
+    // Load existing users from file
+
+    constexpr int MAX_USERS = 100;
+
+    User users[MAX_USERS];
+
+    int numUsers = loadUsers(users);
+
+    if (numUsers == 0) {
+
+        std::cerr << "No users loaded. Create new users." << std::endl;
+
+    }
+
+
+
+    // Accept incoming connection
+
+    if ((clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen)) < 0) {
+
+        std::cerr << "Accept failed" << std::endl;
+
+        return 1;
+
+    }
+
+
+
+    std::cout << "Client connected" << std::endl;
+
+
+
+    char buffer[BUFFER_SIZE];
+
+    while (true) {
+
+        std::cout << "Menu:" << std::endl;
+
+        std::cout << "1. Create User" << std::endl;
+
+        std::cout << "2. Log In" << std::endl;
+
+        std::cout << "3. Display Messages" << std::endl;
+
+        std::cout << "4. Display Users and Passwords" << std::endl;
+
+        std::cout << "5. Start Chat" << std::endl;
+
+        std::cout << "Enter your choice: ";
+
+        int choice;
+
+        std::cin >> choice;
+
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+
+
+        switch (choice) {
+
+            case 1: {
+
+                std::string username, password;
+
+                std::cout << "Enter username: ";
+
+                std::getline(std::cin, username);
+
+                std::cout << "Enter password: ";
+
+                std::getline(std::cin, password);
+
+                if (createUser(username, password)) {
+
+                    std::cout << "User created successfully" << std::endl;
+
+                    users[numUsers++] = {username, password};
+
+                } else {
+
+                    std::cerr << "Failed to create user" << std::endl;
+
+                }
+
+                break;
+
+            }
+
+            case 2: {
+
+                std::string username, password;
+
+                std::cout << "Enter username: ";
+
+                std::getline(std::cin, username);
+
+                std::cout << "Enter password: ";
+
+                std::getline(std::cin, password);
+
+                if (authenticateUser(username, password, users, numUsers)) {
+
+                    std::cout << "Login successful" << std::endl;
+
+                    send(clientSocket, "Login successful", 16, 0);
+
+                } else {
+
+                    std::cout << "Login failed" << std::endl;
+
+                    send(clientSocket, "Login failed", 12, 0);
+
+                }
+
+                break;
+
+            }
+
+            case 3: {
+
+                displayMessages();
+
+                break;
+
+            }
+
+            case 4: {
+
+                displayUsers(users, numUsers);
+
+                break;
+
+            }
+
+            case 5: {
+
+                chat(clientSocket);
+
+                break;
+
+            }
+
+            default:
+
+                std::cout << "Invalid choice" << std::endl;
+
+                break;
+
+        }
+
+    }
+
+
+
+    // Close sockets
+
+    close(clientSocket);
+
+    close(serverSocket);
+
+
+
+    return 0;
+
+}
+
