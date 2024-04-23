@@ -11,12 +11,24 @@ constexpr int PORT = 4500;
 constexpr int BUFFER_SIZE = 1024;
 constexpr const char* LOG_FILE = "chat_log.txt";
 constexpr const char* USER_FILE = "users.txt";
+constexpr int SHIFT = 3; // Caesar cipher shift value
 
 // Define a structure to hold user credentials
 struct User {
     std::string username;
     std::string password;
 };
+
+// Function to encrypt or decrypt a string using Caesar cipher
+std::string encryptDecrypt(const std::string& input, int shift) {
+    std::string result = input;
+    for (char& c : result) {
+        if (isalpha(c)) {
+            c = (c + shift - 'a' + 26) % 26 + 'a'; // Apply shift and wrap around if necessary
+        }
+    }
+    return result;
+}
 
 // Function to authenticate user credentials
 bool authenticateUser(const std::string& username, const std::string& password, const User users[], int numUsers) {
@@ -35,7 +47,7 @@ bool createUser(const std::string& username, const std::string& password) {
         std::cerr << "Failed to open " << USER_FILE << " for writing" << std::endl;
         return false;
     }
-    outfile << username << ':' << password << std::endl;
+    outfile << encryptDecrypt(username, SHIFT) << ':' << encryptDecrypt(password, SHIFT) << std::endl; // Encrypt before saving to file
     outfile.close();
     return true;
 }
@@ -51,11 +63,12 @@ int loadUsers(User users[]) {
     int count = 0;
     while (std::getline(infile, line)) {
         std::istringstream iss(line);
-        if (!(iss >> users[count].username >> users[count].password)) {
+        std::string username, password;
+        if (!(std::getline(iss, username, ':') && std::getline(iss, password))) {
             std::cerr << "Error reading user info from file" << std::endl;
             break;
         }
-        ++count;
+        users[count++] = {encryptDecrypt(username, -SHIFT), encryptDecrypt(password, -SHIFT)}; // Decrypt before storing in memory
     }
     infile.close();
     return count;
@@ -68,32 +81,76 @@ void logMessage(const std::string& message, bool sent) {
         std::cerr << "Failed to open " << LOG_FILE << " for writing" << std::endl;
         return;
     }
-    logfile << (sent ? "Sent: " : "Received: ") << message << std::endl;
+    logfile << (sent ? "Sent: " : "Received: ") << encryptDecrypt(message, SHIFT) << std::endl; // Encrypt before logging
     logfile.close();
 }
 
 // Function to display messages from saved file
-void displayMessages() {
-    std::ifstream logfile(LOG_FILE);
-    if (!logfile.is_open()) {
-        std::cerr << "Failed to open " << LOG_FILE << " for reading" << std::endl;
-        return;
+void displayMessages(const User users[], int numUsers) {
+    std::string username, password;
+    std::cout << "Enter username: ";
+    std::getline(std::cin, username);
+    std::cout << "Enter password: ";
+    std::getline(std::cin, password);
+    if (authenticateUser(username, password, users, numUsers)) { // Authenticate with decrypted credentials
+        std::ifstream logfile(LOG_FILE);
+        if (!logfile.is_open()) {
+            std::cerr << "Failed to open " << LOG_FILE << " for reading" << std::endl;
+            return;
+        }
+        std::cout << "Messages:" << std::endl;
+        std::string line;
+        while (std::getline(logfile, line)) {
+            std::cout << encryptDecrypt(line, -SHIFT) << std::endl; // Decrypt before displaying
+        }
+        logfile.close();
+    } else {
+        std::cout << "Authentication failed" << std::endl;
     }
-    std::cout << "Messages:" << std::endl;
-    std::string line;
-    while (std::getline(logfile, line)) {
-        std::cout << line << std::endl;
-    }
-    logfile.close();
 }
 
 // Function to display users and passwords
 void displayUsers(const User users[], int numUsers) {
-    std::cout << "Users:" << std::endl;
-    for (int i = 0; i < numUsers; ++i) {
-        std::cout << users[i].username << ":" << users[i].password << std::endl;
+    std::string username, password;
+    std::cout << "Enter username: ";
+    std::getline(std::cin, username);
+    std::cout << "Enter password: ";
+    std::getline(std::cin, password);
+    if (authenticateUser(username, password, users, numUsers)) { // Authenticate with decrypted credentials
+        std::cout << "Users:" << std::endl;
+        for (int i = 0; i < numUsers; ++i) {
+            std::cout << users[i].username << ":" << users[i].password << std::endl;
+        }
+    } else {
+        std::cout << "Authentication failed" << std::endl;
     }
 }
+
+// Function to handle chat between client and server
+void chat(int clientSocket) {
+    char buffer[BUFFER_SIZE];
+    while (true) {
+        memset(buffer, 0, sizeof(buffer));
+        if (recv(clientSocket, buffer, BUFFER_SIZE, 0) <= 0) {
+            std::cout << "Connection closed by client." << std::endl;
+            break;
+        }
+        std::cout << "Client: " << buffer << std::endl;
+
+        // Log received message
+        logMessage(buffer, false);
+
+        // Get server input
+        std::cout << "Server: ";
+        std::cin.getline(buffer, BUFFER_SIZE);
+        send(clientSocket, buffer, strlen(buffer), 0);
+
+        // Log sent message
+        logMessage(buffer, true);
+    }
+}
+
+
 
 int main() {
     int serverSocket, clientSocket;
@@ -133,72 +190,80 @@ int main() {
         std::cerr << "No users loaded. Create new users." << std::endl;
     }
 
-    // Accept incoming connection
-    if ((clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen)) < 0) {
-        std::cerr << "Accept failed" << std::endl;
-        return 1;
-    }
-
-    std::cout << "Client connected" << std::endl;
-
-    char buffer[BUFFER_SIZE];
     while (true) {
-        std::cout << "Menu:" << std::endl;
-        std::cout << "1. Create User" << std::endl;
-        std::cout << "2. Log In" << std::endl;
-        std::cout << "3. Display Messages" << std::endl;
-        std::cout << "4. Display Users and Passwords" << std::endl;
-        std::cout << "Enter your choice: ";
-        int choice;
-        std::cin >> choice;
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-
-        switch (choice) {
-            case 1: {
-                std::string username, password;
-                std::cout << "Enter username: ";
-                std::getline(std::cin, username);
-                std::cout << "Enter password: ";
-                std::getline(std::cin, password);
-                if (createUser(username, password)) {
-                    std::cout << "User created successfully" << std::endl;
-                    users[numUsers++] = {username, password};
-                } else {
-                    std::cerr << "Failed to create user" << std::endl;
-                }
-                break;
-            }
-            case 2: {
-                std::string username, password;
-                std::cout << "Enter username: ";
-                std::getline(std::cin, username);
-                std::cout << "Enter password: ";
-                std::getline(std::cin, password);
-                if (authenticateUser(username, password, users, numUsers)) {
-                    std::cout << "Login successful" << std::endl;
-                    send(clientSocket, "Login successful", 16, 0);
-                } else {
-                    std::cout << "Login failed" << std::endl;
-                    send(clientSocket, "Login failed", 12, 0);
-                }
-                break;
-            }
-            case 3: {
-                displayMessages();
-                break;
-            }
-            case 4: {
-                displayUsers(users, numUsers);
-                break;
-            }
-            default:
-                std::cout << "Invalid choice" << std::endl;
-                break;
+        // Accept incoming connection
+        if ((clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen)) < 0) {
+            std::cerr << "Accept failed" << std::endl;
+            return 1;
         }
+
+        std::cout << "Client connected" << std::endl;
+
+        char buffer[BUFFER_SIZE];
+        while (true) {
+            std::cout << "Menu:" << std::endl;
+            std::cout << "1. Create User" << std::endl;
+            std::cout << "2. Log In" << std::endl;
+            std::cout << "3. Display Messages" << std::endl;
+            std::cout << "4. Display Users and Passwords" << std::endl;
+            std::cout << "5. Start Chat" << std::endl;
+            std::cout << "Enter your choice: ";
+            int choice;
+            std::cin >> choice;
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+            switch (choice) {
+                case 1: {
+                    std::string username, password;
+                    std::cout << "Enter username: ";
+                    std::getline(std::cin, username);
+                    std::cout << "Enter password: ";
+                    std::getline(std::cin, password);
+                    if (createUser(username, password)) {
+                        std::cout << "User created successfully" << std::endl;
+                        users[numUsers++] = {username, password};
+                    } else {
+                        std::cerr << "Failed to create user" << std::endl;
+                    }
+                    break;
+                }
+                case 2: {
+                    std::string username, password;
+                    std::cout << "Enter username: ";
+                    std::getline(std::cin, username);
+                    std::cout << "Enter password: ";
+                    std::getline(std::cin, password);
+                    if (authenticateUser(username, password, users, numUsers)) {
+                        std::cout << "Login successful" << std::endl;
+                        send(clientSocket, "Login successful", 16, 0);
+                    } else {
+                        std::cout << "Login failed" << std::endl;
+                        send(clientSocket, "Login failed", 12, 0);
+                    }
+                    break;
+                }
+                case 3: {
+                    displayMessages(users, numUsers);
+                    break;
+                }
+                case 4: {
+                    displayUsers(users, numUsers);
+                    break;
+                }
+                case 5: {
+                    chat(clientSocket);
+                    break;
+                }
+                default:
+                    std::cout << "Invalid choice" << std::endl;
+                    break;
+            }
+        }
+        // Close client socket
+        close(clientSocket);
     }
 
-    // Close sockets
-    close(clientSocket);
+    // Close server socket
     close(serverSocket);
 
     return 0;
