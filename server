@@ -1,0 +1,169 @@
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <cstring>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+constexpr int PORT = 4500;
+constexpr int BUFFER_SIZE = 1024;
+
+// Define a structure to hold user credentials
+struct User {
+    std::string username;
+    std::string password;
+};
+
+// Function to authenticate user credentials
+bool authenticateUser(const std::string& username, const std::string& password, const User users[], int numUsers) {
+    for (int i = 0; i < numUsers; ++i) {
+        if (users[i].username == username && users[i].password == password) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Function to create a new user and save to file
+bool createUser(const std::string& username, const std::string& password) {
+    std::ofstream outfile("users.txt", std::ios_base::app);
+    if (!outfile.is_open()) {
+        std::cerr << "Failed to open users.txt for writing" << std::endl;
+        return false;
+    }
+    outfile << username << ':' << password << std::endl;
+    outfile.close();
+    return true;
+}
+
+// Function to load users from file
+int loadUsers(User users[]) {
+    std::ifstream infile("users.txt");
+    if (!infile.is_open()) {
+        std::cerr << "Failed to open users.txt for reading" << std::endl;
+        return 0;
+    }
+    std::string line;
+    int count = 0;
+    while (std::getline(infile, line)) {
+        std::istringstream iss(line);
+        if (!(iss >> users[count].username >> users[count].password)) {
+            std::cerr << "Error reading user info from file" << std::endl;
+            break;
+        }
+        ++count;
+    }
+    infile.close();
+    return count;
+}
+
+int main() {
+    int serverSocket, clientSocket;
+    sockaddr_in serverAddr, clientAddr;
+    socklen_t clientAddrLen = sizeof(clientAddr);
+
+    // Create socket
+    if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        std::cerr << "Socket creation error" << std::endl;
+        return 1;
+    }
+
+    memset(&serverAddr, 0, sizeof(serverAddr));
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddr.sin_port = htons(PORT);
+
+    // Bind socket to port
+    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        std::cerr << "Bind failed" << std::endl;
+        return 1;
+    }
+
+    // Listen for connections
+    if (listen(serverSocket, SOMAXCONN) < 0) {
+        std::cerr << "Listen failed" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Server listening on port " << PORT << std::endl;
+
+    // Load existing users from file
+    constexpr int MAX_USERS = 100;
+    User users[MAX_USERS];
+    int numUsers = loadUsers(users);
+    if (numUsers == 0) {
+        std::cerr << "No users loaded. Create new users." << std::endl;
+    }
+
+    // Accept incoming connection
+    if ((clientSocket = accept(serverSocket, (sockaddr*)&clientAddr, &clientAddrLen)) < 0) {
+        std::cerr << "Accept failed" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Client connected" << std::endl;
+
+    char buffer[BUFFER_SIZE];
+    while (true) {
+        memset(buffer, 0, sizeof(buffer));
+        if (recv(clientSocket, buffer, BUFFER_SIZE, 0) <= 0) {
+            std::cout << "Connection closed by client." << std::endl;
+            break;
+        }
+        std::cout << "Client: " << buffer << std::endl;
+
+        // Check if the received message is a login or create user command
+        if (strncmp(buffer, "LOGIN:", 6) == 0) {
+            // Extract username and password from the message
+            std::string loginInfo = buffer + 6; // Skip "LOGIN:"
+            size_t delimiterPos = loginInfo.find(':');
+            if (delimiterPos != std::string::npos) {
+                std::string username = loginInfo.substr(0, delimiterPos);
+                std::string password = loginInfo.substr(delimiterPos + 1);
+
+                // Authenticate user credentials
+                if (authenticateUser(username, password, users, numUsers)) {
+                    send(clientSocket, "Login successful", 16, 0);
+                    std::cout << "Login successful" << std::endl;
+                } else {
+                    send(clientSocket, "Login failed", 12, 0);
+                    std::cout << "Login failed" << std::endl;
+                }
+            }
+        } else if (strncmp(buffer, "CREATE:", 7) == 0) {
+            // Extract username and password from the message
+            std::string createInfo = buffer + 7; // Skip "CREATE:"
+            size_t delimiterPos = createInfo.find(':');
+            if (delimiterPos != std::string::npos) {
+                std::string username = createInfo.substr(0, delimiterPos);
+                std::string password = createInfo.substr(delimiterPos + 1);
+
+                // Create new user
+                if (createUser(username, password)) {
+                    send(clientSocket, "User created successfully", 25, 0);
+                    std::cout << "User created successfully" << std::endl;
+
+                    // Add new user to array
+                    if (numUsers < MAX_USERS) {
+                        users[numUsers++] = {username, password};
+                    } else {
+                        std::cerr << "Maximum number of users reached" << std::endl;
+                    }
+                } else {
+                    send(clientSocket, "Failed to create user", 21, 0);
+                    std::cerr << "Failed to create user" << std::endl;
+                }
+            }
+        } else {
+            std::cout << "Invalid command" << std::endl;
+            send(clientSocket, "Invalid command", 16, 0);
+        }
+    }
+
+    // Close sockets
+    close(clientSocket);
+    close(serverSocket);
+
+    return 0;
+}
